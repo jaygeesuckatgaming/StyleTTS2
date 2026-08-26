@@ -14,4 +14,10 @@ einops-exts
 tqdm
 typing
 typing-extensions
+phonemizer
+gradio
+cached_path
+txtsplit
+flask
+flask_cors
 git+https://github.com/resemble-ai/monotonic_align.git
