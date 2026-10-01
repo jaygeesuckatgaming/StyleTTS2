@@ -40,6 +40,7 @@ try:
     SAMPLE_RATE = config.getint('TTS', 'sample_rate')
     SEED = config.getint('TTS', 'seed')
     REFERENCE_VOICE = config.get('TTS', 'reference_voice')
+    COPY_TO = config.get('TTS', 'copy_to', fallback='')
     SERVER_HOST = config.get('Server', 'host')
     SERVER_PORT = config.getint('Server', 'port')
     SERVER_DEBUG = config.getboolean('Server', 'debug')
@@ -124,6 +125,16 @@ def tts_endpoint():
         sf.write(output_filepath, full_audio, SAMPLE_RATE)
         print(f"Saved StyleTTS 2 audio to: {output_filepath}")
 
+        # Optionally copy the audio to a network share on another computer
+        if COPY_TO:
+            try:
+                import shutil
+                dest = os.path.join(COPY_TO, "server_output.wav")
+                shutil.copy2(output_filepath, dest)
+                print(f"Copied audio to network share: {dest}")
+            except Exception as e:
+                print(f"Failed to copy audio to network share '{COPY_TO}': {e}")
+
         # In a microservice architecture, we just need to confirm success.
         # Sending the audio back is optional but good practice.
         buffer = io.BytesIO()
@@ -146,14 +157,15 @@ def get_settings():
         'beta': BETA,
         'sample_rate': SAMPLE_RATE,
         'seed': SEED,
-        'reference_voice': REFERENCE_VOICE
+        'reference_voice': REFERENCE_VOICE,
+        'copy_to': COPY_TO
     })
 
 
 @app.route('/settings', methods=['POST'])
 def update_settings():
     """Update TTS settings (writes to settings.ini)"""
-    global DIFFUSION_STEPS, EMBEDDING_SCALE, ALPHA, BETA, SAMPLE_RATE, SEED, REFERENCE_VOICE
+    global DIFFUSION_STEPS, EMBEDDING_SCALE, ALPHA, BETA, SAMPLE_RATE, SEED, REFERENCE_VOICE, COPY_TO
     
     data = request.get_json()
     if not data:
@@ -174,6 +186,8 @@ def update_settings():
         SEED = int(data['seed'])
     if 'reference_voice' in data:
         REFERENCE_VOICE = data['reference_voice']
+    if 'copy_to' in data:
+        COPY_TO = data['copy_to']
     
     # Write to settings.ini
     try:
@@ -184,6 +198,7 @@ def update_settings():
         config.set('TTS', 'sample_rate', str(SAMPLE_RATE))
         config.set('TTS', 'seed', str(SEED))
         config.set('TTS', 'reference_voice', REFERENCE_VOICE)
+        config.set('TTS', 'copy_to', COPY_TO)
         with open(config_file, 'w') as f:
             config.write(f)
     except Exception as e:
