@@ -14,6 +14,7 @@ import configparser
 
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
+import requests
 import soundfile as sf
 import numpy as np
 import torch
@@ -41,6 +42,8 @@ try:
     SEED = config.getint('TTS', 'seed')
     REFERENCE_VOICE = config.get('TTS', 'reference_voice')
     COPY_TO = config.get('TTS', 'copy_to', fallback='')
+    COPY_ENABLED = config.getboolean('TTS', 'copy_enabled', fallback=True)
+    PUSH_URL = config.get('TTS', 'push_url', fallback='')
     SERVER_HOST = config.get('Server', 'host')
     SERVER_PORT = config.getint('Server', 'port')
     SERVER_DEBUG = config.getboolean('Server', 'debug')
@@ -125,21 +128,35 @@ def tts_endpoint():
         sf.write(output_filepath, full_audio, SAMPLE_RATE)
         print(f"Saved StyleTTS 2 audio to: {output_filepath}")
 
-        # Optionally copy the audio to a network share on another computer
-        if COPY_TO:
-            try:
-                import shutil
-                dest = os.path.join(COPY_TO, "server_output.wav")
-                shutil.copy2(output_filepath, dest)
-                print(f"Copied audio to network share: {dest}")
-            except Exception as e:
-                print(f"Failed to copy audio to network share '{COPY_TO}': {e}")
-
         # In a microservice architecture, we just need to confirm success.
         # Sending the audio back is optional but good practice.
         buffer = io.BytesIO()
         sf.write(buffer, full_audio, SAMPLE_RATE, format='WAV')
         buffer.seek(0)
+        wav_bytes = buffer.getvalue()
+
+        # Deliver the audio to the watcher via ONE of two mutually-exclusive
+        # paths (avoids double-play):
+        #   - COPY_ENABLED True  -> SMB file copy (watcher polls the share)
+        #   - COPY_ENABLED False -> HTTP push direct to the watcher over LAN
+        if COPY_ENABLED:
+            if COPY_TO:
+                try:
+                    import shutil
+                    dest = os.path.join(COPY_TO, "server_output.wav")
+                    shutil.copy2(output_filepath, dest)
+                    print(f"Copied audio to network share: {dest}")
+                except Exception as e:
+                    print(f"Failed to copy audio to network share '{COPY_TO}': {e}")
+        elif PUSH_URL:
+            try:
+                requests.post(PUSH_URL, data=wav_bytes,
+                              headers={'Content-Type': 'application/octet-stream'},
+                              timeout=5)
+                print(f"Pushed audio to watcher: {PUSH_URL}")
+            except Exception as e:
+                print(f"Failed to push audio to watcher '{PUSH_URL}': {e}")
+
         return Response(buffer, mimetype='audio/wav')
 
     except Exception as e:
@@ -158,14 +175,16 @@ def get_settings():
         'sample_rate': SAMPLE_RATE,
         'seed': SEED,
         'reference_voice': REFERENCE_VOICE,
-        'copy_to': COPY_TO
+        'copy_to': COPY_TO,
+        'copy_enabled': COPY_ENABLED,
+        'push_url': PUSH_URL
     })
 
 
 @app.route('/settings', methods=['POST'])
 def update_settings():
     """Update TTS settings (writes to settings.ini)"""
-    global DIFFUSION_STEPS, EMBEDDING_SCALE, ALPHA, BETA, SAMPLE_RATE, SEED, REFERENCE_VOICE, COPY_TO
+    global DIFFUSION_STEPS, EMBEDDING_SCALE, ALPHA, BETA, SAMPLE_RATE, SEED, REFERENCE_VOICE, COPY_TO, COPY_ENABLED, PUSH_URL
     
     data = request.get_json()
     if not data:
@@ -188,6 +207,10 @@ def update_settings():
         REFERENCE_VOICE = data['reference_voice']
     if 'copy_to' in data:
         COPY_TO = data['copy_to']
+    if 'copy_enabled' in data:
+        COPY_ENABLED = bool(data['copy_enabled'])
+    if 'push_url' in data:
+        PUSH_URL = data['push_url']
     
     # Write to settings.ini
     try:
@@ -199,6 +222,8 @@ def update_settings():
         config.set('TTS', 'seed', str(SEED))
         config.set('TTS', 'reference_voice', REFERENCE_VOICE)
         config.set('TTS', 'copy_to', COPY_TO)
+        config.set('TTS', 'copy_enabled', str(COPY_ENABLED).lower())
+        config.set('TTS', 'push_url', PUSH_URL)
         with open(config_file, 'w') as f:
             config.write(f)
     except Exception as e:
